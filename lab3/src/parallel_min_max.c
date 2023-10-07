@@ -5,13 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-
 #include <getopt.h>
-
 #include "find_min_max.h"
 #include "utils.h"
 
@@ -40,34 +37,25 @@ int main(int argc, char **argv) {
         switch (option_index) {
           case 0:
             seed = atoi(optarg);
-            // your code here
-            // error handling
             break;
           case 1:
             array_size = atoi(optarg);
-            // your code here
-            // error handling
             break;
           case 2:
             pnum = atoi(optarg);
-            // your code here
-            // error handling
             break;
           case 3:
             with_files = true;
             break;
-
-          defalut:
+          default:
             printf("Index %d is out of options\n", option_index);
         }
         break;
       case 'f':
         with_files = true;
         break;
-
       case '?':
         break;
-
       default:
         printf("getopt returned character code 0%o?\n", c);
     }
@@ -79,36 +67,50 @@ int main(int argc, char **argv) {
   }
 
   if (seed == -1 || array_size == -1 || pnum == -1) {
-    printf("Usage: %s --seed \"num\" --array_size \"num\" --pnum \"num\" \n",
-           argv[0]);
+    printf("Usage: %s --seed \"num\" --array_size \"num\" --pnum \"num\" \n", argv[0]);
     return 1;
   }
 
   int *array = malloc(sizeof(int) * array_size);
   GenerateArray(array, array_size, seed);
+
   int active_child_processes = 0;
+  int **pipes = (int **)malloc(sizeof(int *) * pnum);
 
   struct timeval start_time;
   gettimeofday(&start_time, NULL);
 
   for (int i = 0; i < pnum; i++) {
+    pipes[i] = (int *)malloc(sizeof(int) * 2);
+    if (pipe(pipes[i]) == -1) {
+      perror("pipe");
+      return 1;
+    }
     pid_t child_pid = fork();
     if (child_pid >= 0) {
       // successful fork
       active_child_processes += 1;
       if (child_pid == 0) {
         // child process
+        int elements_per_process = array_size / pnum;
+        int start = i * elements_per_process;
+        int end = (i == pnum - 1) ? array_size : (i + 1) * elements_per_process;
 
-        // parallel somehow
+        struct MinMax local_min_max = GetMinMax(array, start, end);
 
         if (with_files) {
-          // use files here
+          char filename[20];
+          sprintf(filename, "part%d.txt", i);
+          FILE *file = fopen(filename, "w");
+          fwrite(&local_min_max, sizeof(struct MinMax), 1, file);
+          fclose(file);
         } else {
-          // use pipe here
+          close(pipes[i][0]);  // close read end
+          write(pipes[i][1], &local_min_max, sizeof(struct MinMax));
+          close(pipes[i][1]);
         }
         return 0;
       }
-
     } else {
       printf("Fork failed!\n");
       return 1;
@@ -116,8 +118,8 @@ int main(int argc, char **argv) {
   }
 
   while (active_child_processes > 0) {
-    // your code here
-
+    int status;
+    wait(&status);
     active_child_processes -= 1;
   }
 
@@ -130,13 +132,19 @@ int main(int argc, char **argv) {
     int max = INT_MIN;
 
     if (with_files) {
-      // read from files
+      char filename[20];
+      sprintf(filename, "part%d.txt", i);
+      FILE *file = fopen(filename, "r");
+      fread(&min_max, sizeof(struct MinMax), 1, file);
+      fclose(file);
     } else {
-      // read from pipes
+      close(pipes[i][1]);  // close write end
+      read(pipes[i][0], &min_max, sizeof(struct MinMax));
+      close(pipes[i][0]);
     }
 
-    if (min < min_max.min) min_max.min = min;
-    if (max > min_max.max) min_max.max = max;
+    if (min_max.min < min) min = min_max.min;
+    if (min_max.max > max) max = min_max.max;
   }
 
   struct timeval finish_time;
@@ -146,6 +154,10 @@ int main(int argc, char **argv) {
   elapsed_time += (finish_time.tv_usec - start_time.tv_usec) / 1000.0;
 
   free(array);
+  for (int i = 0; i < pnum; i++) {
+    free(pipes[i]);
+  }
+  free(pipes);
 
   printf("Min: %d\n", min_max.min);
   printf("Max: %d\n", min_max.max);
